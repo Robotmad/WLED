@@ -2,6 +2,34 @@
  * Server page definitions
  */
 
+//Is this an IP?
+bool isIp(String str) {
+  for (size_t i = 0; i < str.length(); i++) {
+    int c = str.charAt(i);
+    if (c != '.' && (c < '0' || c > '9')) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool captivePortal(AsyncWebServerRequest *request)
+{
+  if (ON_STA_FILTER(request)) return false; //only serve captive in AP mode
+  String hostH;
+  if (!request->hasHeader("Host")) return false;
+  hostH = request->getHeader("Host")->value();
+  
+  if (!isIp(hostH) && hostH.indexOf("wled.me") < 0 && hostH.indexOf(cmDNS) < 0) {
+    DEBUG_PRINTLN("Captive portal");
+    AsyncWebServerResponse *response = request->beginResponse(302);
+    response->addHeader("Location", "http://4.3.2.1");
+    request->send(response);
+    return true;
+  }
+  return false;
+}
+
 void initServer()
 {
   //CORS compatiblity
@@ -70,8 +98,7 @@ void initServer()
     serveJson(request);
   });
 
-  AsyncCallbackJsonWebHandler* handler = new AsyncCallbackJsonWebHandler("/json", [](AsyncWebServerRequest *request, JsonVariant &json) {
-    JsonObject root = json.to<JsonObject>();
+  AsyncCallbackJsonWebHandler* handler = new AsyncCallbackJsonWebHandler("/json", [](AsyncWebServerRequest *request, JsonObject root) {
     if (root.isNull()){request->send(500, "application/json", "{\"error\":\"Parsing failed\"}"); return;}
     if (deserializeState(root)) { serveJson(request); return; } //if JSON contains "v" (verbose response)
     request->send(200, "application/json", "{\"success\":true}");
@@ -162,6 +189,7 @@ void initServer()
   }
 
   server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
+    if (captivePortal(request)) return;
     serveIndexOrWelcome(request);
   });
   
@@ -169,6 +197,7 @@ void initServer()
   server.onNotFound([](AsyncWebServerRequest *request){
     DEBUG_PRINTLN("Not-Found HTTP call:");
     DEBUG_PRINTLN("URI: " + request->url());
+    if (captivePortal(request)) return;
 
     //make API CORS compatible
     if (request->method() == HTTP_OPTIONS)
@@ -305,7 +334,7 @@ String settingsProcessor(const String& var)
     getCSSColors();
     return String(buf);
   }
-  if (var == "SCSS") return String(PAGE_settingsCss);
+  if (var == "SCSS") return String(FPSTR(PAGE_settingsCss));
   return String();
 }
 
@@ -343,7 +372,7 @@ void serveSettings(AsyncWebServerRequest* request)
     case 4:   request->send_P(200, "text/html", PAGE_settings_sync, settingsProcessor); break;
     case 5:   request->send_P(200, "text/html", PAGE_settings_time, settingsProcessor); break;
     case 6:   request->send_P(200, "text/html", PAGE_settings_sec , settingsProcessor); break;
-    case 255: request->send_P(200, "text/html", PAGE_welcome      , settingsProcessor); break;
+    case 255: request->send_P(200, "text/html", PAGE_welcome); break;
     default:  request->send_P(200, "text/html", PAGE_settings     , settingsProcessor); 
   }
 }

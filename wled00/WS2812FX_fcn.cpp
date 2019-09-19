@@ -89,6 +89,10 @@ bool WS2812FX::modeUsesLock(uint8_t m)
   return false;
 }
 
+void WS2812FX::setPixelColor(uint16_t n, CRGB fastled) {
+  setPixelColor(n, fastled.red, fastled.green, fastled.blue, 0);
+}
+
 void WS2812FX::setPixelColor(uint16_t n, uint32_t c) {
   uint8_t w = (c >> 24) & 0xFF;
   uint8_t r = (c >> 16) & 0xFF;
@@ -100,7 +104,6 @@ void WS2812FX::setPixelColor(uint16_t n, uint32_t c) {
 void WS2812FX::setPixelColor(uint16_t i, byte r, byte g, byte b, byte w)
 {
   if (_locked[i] && !_modeUsesLock) return;
-  if (reverseMode) i = _length -1 -i;
   if (IS_REVERSE)   i = SEGMENT.stop -1 -i - SEGMENT.start; //reverse just individual segment
   byte tmpg = g;
   switch (colorOrder) //0 = Grb, default
@@ -112,6 +115,7 @@ void WS2812FX::setPixelColor(uint16_t i, byte r, byte g, byte b, byte w)
   }
   if (!_cronixieMode)
   {
+    if (reverseMode) i = _length -1 -i;
     if (_skipFirstMode)
     { 
       if (i < LED_SKIP_AMOUNT) bus->SetPixelColor(i, RgbwColor(0,0,0,0));
@@ -346,8 +350,9 @@ void WS2812FX::setColor(uint8_t slot, uint32_t c) {
 
 void WS2812FX::setBrightness(uint8_t b) {
   if (_brightness == b) return;
-  _brightness = gammaCorrectBri ? gamma8(b) : b;
-  if (SEGENV.next_time > millis() + 20) show(); //apply brightness change immediately if no refresh soon
+  _brightness = (gammaCorrectBri) ? gamma8(b) : b;
+  _segment_index = 0;
+  if (SEGENV.next_time > millis() + 22) show();//apply brightness change immediately if no refresh soon
 }
 
 uint8_t WS2812FX::getMode(void) {
@@ -497,7 +502,7 @@ void WS2812FX::setRange(uint16_t i, uint16_t i2, uint32_t col)
 void WS2812FX::lock(uint16_t i)
 {
   if (_modeUsesLock) return;
-  if (i >= 0 && i < _length) _locked[i] = true;
+  if (i < _length) _locked[i] = true;
 }
 
 void WS2812FX::lockRange(uint16_t i, uint16_t i2)
@@ -505,14 +510,14 @@ void WS2812FX::lockRange(uint16_t i, uint16_t i2)
   if (_modeUsesLock) return;
   for (uint16_t x = i; x < i2; x++)
   {
-    if (x >= 0 && x < _length) _locked[i] = true;
+    if (x < _length) _locked[i] = true;
   }
 }
 
 void WS2812FX::unlock(uint16_t i)
 {
   if (_modeUsesLock) return;
-  if (i >= 0 && i < _length) _locked[i] = false;
+  if (i < _length) _locked[i] = false;
 }
 
 void WS2812FX::unlockRange(uint16_t i, uint16_t i2)
@@ -520,7 +525,7 @@ void WS2812FX::unlockRange(uint16_t i, uint16_t i2)
   if (_modeUsesLock) return;
   for (uint16_t x = i; x < i2; x++)
   {
-    if (x >= 0 && x < _length) _locked[x] = false;
+    if (x < _length) _locked[x] = false;
   }
 }
 
@@ -531,6 +536,7 @@ void WS2812FX::unlockAll()
 
 void WS2812FX::setTransitionMode(bool t)
 {
+  _segment_index = 0;
   SEGMENT.setOption(7,t);
   if (!t) return;
   unsigned long waitMax = millis() + 20; //refresh after 20 ms if transition enabled
@@ -616,7 +622,7 @@ void WS2812FX::blur(uint8_t blur_amount)
   CRGB carryover = CRGB::Black;
   for(uint16_t i = SEGMENT.start; i < SEGMENT.stop; i++)
   {
-    CRGB cur = fastled_from_col(getPixelColor(i));
+    CRGB cur = col_to_crgb(getPixelColor(i));
     CRGB part = cur;
     part.nscale8(seep);
     cur.nscale8(keep);
@@ -668,7 +674,13 @@ uint8_t WS2812FX::get_random_wheel_index(uint8_t pos) {
 }
 
 
-CRGB WS2812FX::fastled_from_col(uint32_t color)
+uint32_t WS2812FX::crgb_to_col(CRGB fastled)
+{
+  return (((uint32_t)fastled.red << 16) | ((uint32_t)fastled.green << 8) | fastled.blue);
+}
+
+
+CRGB WS2812FX::col_to_crgb(uint32_t color)
 {
   CRGB fastled_col;
   fastled_col.red =   (color >> 16 & 0xFF);
@@ -720,11 +732,11 @@ void WS2812FX::handle_palette(void)
         _lastPaletteChange = millis();
       } break;}
     case 2: {//primary color only
-      CRGB prim = fastled_from_col(SEGCOLOR(0));
+      CRGB prim = col_to_crgb(SEGCOLOR(0));
       targetPalette = CRGBPalette16(prim); break;}
     case 3: {//based on primary
       //considering performance implications
-      CRGB prim = fastled_from_col(SEGCOLOR(0));
+      CRGB prim = col_to_crgb(SEGCOLOR(0));
       CHSV prim_hsv = rgb2hsv_approximate(prim);
       targetPalette = CRGBPalette16(
                       CHSV(prim_hsv.h, prim_hsv.s, prim_hsv.v), //color itself
@@ -733,12 +745,12 @@ void WS2812FX::handle_palette(void)
                       CHSV(prim_hsv.h, prim_hsv.s, prim_hsv.v)); //color itself
       break;}
     case 4: {//primary + secondary
-      CRGB prim = fastled_from_col(SEGCOLOR(0));
-      CRGB sec  = fastled_from_col(SEGCOLOR(1));
+      CRGB prim = col_to_crgb(SEGCOLOR(0));
+      CRGB sec  = col_to_crgb(SEGCOLOR(1));
       targetPalette = CRGBPalette16(sec,prim); break;}
     case 5: {//based on primary + secondary
-      CRGB prim = fastled_from_col(SEGCOLOR(0));
-      CRGB sec  = fastled_from_col(SEGCOLOR(1));
+      CRGB prim = col_to_crgb(SEGCOLOR(0));
+      CRGB sec  = col_to_crgb(SEGCOLOR(1));
       targetPalette = CRGBPalette16(sec,prim,CRGB::White); break;}
     case 6: //Party colors
       targetPalette = PartyColors_p; break;
@@ -769,7 +781,7 @@ void WS2812FX::handle_palette(void)
 
 uint32_t WS2812FX::color_from_palette(uint16_t i, bool mapping, bool wrap, uint8_t mcol, uint8_t pbri)
 {
-  if (SEGMENT.palette == 0 && mcol < 3) return SEGMENT.colors[mcol]; //WS2812FX default
+  if (SEGMENT.palette == 0 && mcol < 3) return SEGCOLOR(mcol); //WS2812FX default
   uint8_t paletteIndex = i;
   if (mapping) paletteIndex = map(i,SEGMENT.start,SEGMENT.stop-1,0,255);
   if (!wrap) paletteIndex = scale8(paletteIndex, 240); //cut off blend at palette "end"
